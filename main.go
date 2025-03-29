@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 )
 
 var _ = net.Listen
@@ -40,9 +41,30 @@ func main() {
 		return
 	}
 	method, path := string(split[0]), string(split[1])
-	if method == "GET" && path == "/" {
+	switch method {
+	case "GET":
+		handleGet(conn, path)
+	default:
+		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n"))
+	}
+}
+
+func handleGet(conn net.Conn, path string) {
+	endpoint := strings.Split(path, "/")[1]
+	switch endpoint {
+	case "":
 		conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
 		return
+	case "echo":
+		els := strings.Split(path, "/")
+		pathParam := els[len(els)-1]
+		res := fmt.Sprintf(
+			"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
+			len(pathParam),
+			pathParam,
+		)
+		conn.Write([]byte(res))
+	default:
+		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n"))
 	}
-	conn.Write([]byte("HTTP/1.1 404 Not Found\r\n"))
 }
