@@ -131,8 +131,7 @@ func (r *request) ok(contentType string, body []byte) {
 	)))
 }
 func (r *request) getEcho() {
-	els := strings.Split(r.path, "/")
-	pathParam := els[len(els)-1]
+	pathParam := strings.TrimPrefix(r.path, "/echo/")
 	r.ok(contentTypeTextPlain, []byte(pathParam))
 }
 
@@ -146,8 +145,7 @@ func (r *request) getUseragent() {
 }
 
 func (r *request) getFiles() {
-	els := strings.Split(r.path, "/")
-	filename := els[len(els)-1]
+	filename := strings.TrimPrefix(r.path, "/files/")
 	fp, err := os.Open(fmt.Sprintf("/tmp/%s", filename))
 	if err != nil && errors.Is(err, os.ErrNotExist) {
 		log.Println("file not found: ", filename)
