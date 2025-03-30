@@ -3,7 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -11,6 +14,11 @@ import (
 
 var _ = net.Listen
 var _ = os.Exit
+
+var (
+	contentTypeTextPlain   = "text/plain"
+	contentTypeOctetStream = "application/octet-stream"
+)
 
 func main() {
 	l, err := net.Listen("tcp", "0.0.0.0:4221")
@@ -93,29 +101,14 @@ func (r *request) handleGet() {
 	endpoint := strings.Split(r.path, "/")[1]
 	switch endpoint {
 	case "":
-		r.conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+		r.ok(contentTypeTextPlain, []byte(""))
 		return
 	case "echo":
-		els := strings.Split(r.path, "/")
-		pathParam := els[len(els)-1]
-		res := fmt.Sprintf(
-			"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
-			len(pathParam),
-			pathParam,
-		)
-		r.conn.Write([]byte(res))
+		r.getEcho()
 	case "user-agent":
-		ua, ok := r.headers["User-Agent"]
-		if !ok {
-			r.badRequest()
-			return
-		}
-		res := fmt.Sprintf(
-			"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
-			len(ua),
-			ua,
-		)
-		r.conn.Write([]byte(res))
+		r.getUseragent()
+	case "files":
+		r.getFiles()
 	default:
 		r.notFound()
 	}
@@ -127,4 +120,49 @@ func (r *request) badRequest() {
 
 func (r *request) notFound() {
 	r.conn.Write([]byte("HTTP/1.1 404 Not Found\r\n"))
+}
+
+func (r *request) ok(contentType string, body []byte) {
+	r.conn.Write([]byte(fmt.Sprintf(
+		"HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n%s",
+		contentType,
+		len(body),
+		body,
+	)))
+}
+func (r *request) getEcho() {
+	els := strings.Split(r.path, "/")
+	pathParam := els[len(els)-1]
+	r.ok(contentTypeTextPlain, []byte(pathParam))
+}
+
+func (r *request) getUseragent() {
+	ua, ok := r.headers["User-Agent"]
+	if !ok {
+		r.badRequest()
+		return
+	}
+	r.ok(contentTypeTextPlain, []byte(ua))
+}
+
+func (r *request) getFiles() {
+	els := strings.Split(r.path, "/")
+	filename := els[len(els)-1]
+	fp, err := os.Open(fmt.Sprintf("/tmp/%s", filename))
+	if err != nil && errors.Is(err, os.ErrNotExist) {
+		log.Println("file not found: ", filename)
+		r.notFound()
+		return
+	}
+	if err != nil {
+		r.badRequest()
+		return
+	}
+	defer fp.Close()
+	body, err := io.ReadAll(fp)
+	if err != nil {
+		r.badRequest()
+		return
+	}
+	r.ok(contentTypeOctetStream, body)
 }
