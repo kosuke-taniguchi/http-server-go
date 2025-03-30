@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -16,45 +17,56 @@ var _ = net.Listen
 var _ = os.Exit
 
 var (
+	// ContentType
 	contentTypeTextPlain   = "text/plain"
 	contentTypeOctetStream = "application/octet-stream"
+	// headers
+	headerUserAgent   = "User-Agent"
+	headerContentType = "Content-Type"
 )
 
 func main() {
+	var directory string
+	flag.StringVar(&directory, "directory", "/tmp", "directory from which to serve files")
+	flag.Parse()
+	info, err := os.Stat(directory)
+	if err != nil {
+		log.Println("Failed to stat directory: ", err.Error())
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		log.Println("Directory does not exist: ", directory)
+		os.Exit(1)
+	}
 	l, err := net.Listen("tcp", "0.0.0.0:4221")
 	if err != nil {
-		fmt.Println("Failed to bind to port 4221")
+		log.Println("Failed to bind to port 4221")
 		os.Exit(1)
 	}
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			fmt.Println("Error accepting connection: ", err.Error())
+			log.Println("Error accepting connection: ", err.Error())
 			os.Exit(1)
 		}
-		go serve(conn)
+		go serve(conn, directory)
 	}
 }
 
-func serve(conn net.Conn) {
+func serve(conn net.Conn, dir string) {
 	defer conn.Close()
 	req := make([]byte, 1024)
 	_, err := conn.Read(req)
 	if err != nil {
-		fmt.Println("Error reading request: ", err.Error())
+		log.Println("Error reading request: ", err.Error())
 		os.Exit(1)
 	}
-	request := newRequest(conn, req)
+	request := newRequest(conn, req, dir)
 	if request == nil {
 		request.badRequest()
 		return
 	}
-	switch request.method {
-	case "GET":
-		request.handleGet()
-	default:
-		request.notFound()
-	}
+	request.routes()
 }
 
 type request struct {
@@ -63,9 +75,10 @@ type request struct {
 	path    string
 	headers map[string]string
 	body    []byte
+	fileDir string
 }
 
-func newRequest(conn net.Conn, req []byte) *request {
+func newRequest(conn net.Conn, req []byte, dir string) *request {
 	scanner := bufio.NewScanner(bytes.NewReader(req))
 	scanner.Scan()
 	// request line
@@ -94,21 +107,43 @@ func newRequest(conn net.Conn, req []byte) *request {
 		path:    reqLine[1],
 		headers: headers,
 		body:    body.Bytes(),
+		fileDir: dir,
 	}
 }
 
-func (r *request) handleGet() {
+func (r *request) routes() {
 	endpoint := strings.Split(r.path, "/")[1]
 	switch endpoint {
-	case "":
-		r.ok(contentTypeTextPlain, []byte(""))
-		return
 	case "echo":
-		r.getEcho()
+		switch r.method {
+		case "GET":
+			r.getEcho()
+		default:
+			r.notFound()
+		}
 	case "user-agent":
-		r.getUseragent()
+		switch r.method {
+		case "GET":
+			r.getUseragent()
+		default:
+			r.notFound()
+		}
 	case "files":
-		r.getFiles()
+		switch r.method {
+		case "GET":
+			r.getFiles()
+		case "POST":
+			r.postFiles()
+		default:
+			r.notFound()
+		}
+	case "":
+		switch r.method {
+		case "GET":
+			r.ok(contentTypeTextPlain, []byte(""))
+		default:
+			r.notFound()
+		}
 	default:
 		r.notFound()
 	}
@@ -130,13 +165,18 @@ func (r *request) ok(contentType string, body []byte) {
 		body,
 	)))
 }
+
+func (r *request) created() {
+	r.conn.Write([]byte(fmt.Sprintf("HTTP/1.1 201 Created\r\n")))
+}
+
 func (r *request) getEcho() {
 	pathParam := strings.TrimPrefix(r.path, "/echo/")
 	r.ok(contentTypeTextPlain, []byte(pathParam))
 }
 
 func (r *request) getUseragent() {
-	ua, ok := r.headers["User-Agent"]
+	ua, ok := r.headers[headerUserAgent]
 	if !ok {
 		r.badRequest()
 		return
@@ -146,7 +186,7 @@ func (r *request) getUseragent() {
 
 func (r *request) getFiles() {
 	filename := strings.TrimPrefix(r.path, "/files/")
-	fp, err := os.Open(fmt.Sprintf("/tmp/%s", filename))
+	fp, err := os.Open(fmt.Sprintf("%s/%s", r.fileDir, filename))
 	if err != nil && errors.Is(err, os.ErrNotExist) {
 		log.Println("file not found: ", filename)
 		r.notFound()
@@ -163,4 +203,24 @@ func (r *request) getFiles() {
 		return
 	}
 	r.ok(contentTypeOctetStream, body)
+}
+
+func (r *request) postFiles() {
+	if r.headers["Content-Type"] != contentTypeOctetStream {
+		r.badRequest()
+		return
+	}
+	filename := strings.TrimPrefix(r.path, "/files/")
+	fp, err := os.Create(fmt.Sprintf("%s/%s", r.fileDir, filename))
+	if err != nil {
+		r.badRequest()
+		return
+	}
+	defer fp.Close()
+	_, err = fp.Write(r.body)
+	if err != nil {
+		r.badRequest()
+		return
+	}
+	r.created()
 }
