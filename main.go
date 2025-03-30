@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"net"
@@ -29,42 +30,95 @@ func main() {
 		fmt.Println("Error reading request: ", err.Error())
 		os.Exit(1)
 	}
-	split := bytes.Split(req, []byte("\r\n"))
-	if len(split) < 2 {
-		conn.Write([]byte("HTTP/1.1 400 Bad Request\r\n"))
+	request := newRequest(conn, req)
+	if request == nil {
+		request.badRequest()
 		return
 	}
-	reqLine := split[0]
-	split = bytes.Split(reqLine, []byte(" "))
-	if len(split) < 3 {
-		conn.Write([]byte("HTTP/1.1 400 Bad Request\r\n"))
-		return
-	}
-	method, path := string(split[0]), string(split[1])
-	switch method {
+	switch request.method {
 	case "GET":
-		handleGet(conn, path)
+		request.handleGet()
 	default:
-		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n"))
+		request.notFound()
 	}
 }
 
-func handleGet(conn net.Conn, path string) {
-	endpoint := strings.Split(path, "/")[1]
+type request struct {
+	conn    net.Conn
+	method  string
+	path    string
+	headers map[string]string
+	body    []byte
+}
+
+func newRequest(conn net.Conn, req []byte) *request {
+	scanner := bufio.NewScanner(bytes.NewReader(req))
+	scanner.Scan()
+	// request line
+	reqLine := strings.Split(scanner.Text(), " ")
+	if len(reqLine) < 3 {
+		return nil
+	}
+	// headers
+	headers := make(map[string]string)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			break
+		} // header終了
+		parts := strings.SplitN(line, ":", 2)
+		headers[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	}
+	// body
+	var body bytes.Buffer
+	for scanner.Scan() {
+		body.Write(scanner.Bytes())
+	}
+	return &request{
+		conn:    conn,
+		method:  reqLine[0],
+		path:    reqLine[1],
+		headers: headers,
+		body:    body.Bytes(),
+	}
+}
+
+func (r *request) handleGet() {
+	endpoint := strings.Split(r.path, "/")[1]
 	switch endpoint {
 	case "":
-		conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+		r.conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
 		return
 	case "echo":
-		els := strings.Split(path, "/")
+		els := strings.Split(r.path, "/")
 		pathParam := els[len(els)-1]
 		res := fmt.Sprintf(
 			"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
 			len(pathParam),
 			pathParam,
 		)
-		conn.Write([]byte(res))
+		r.conn.Write([]byte(res))
+	case "user-agent":
+		ua, ok := r.headers["User-Agent"]
+		if !ok {
+			r.badRequest()
+			return
+		}
+		res := fmt.Sprintf(
+			"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
+			len(ua),
+			ua,
+		)
+		r.conn.Write([]byte(res))
 	default:
-		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n"))
+		r.notFound()
 	}
+}
+
+func (r *request) badRequest() {
+	r.conn.Write([]byte("HTTP/1.1 400 Bad Request\r\n"))
+}
+
+func (r *request) notFound() {
+	r.conn.Write([]byte("HTTP/1.1 404 Not Found\r\n"))
 }
